@@ -3,7 +3,7 @@
 # ============================================
 # 代理速度比较脚本（基于 wget 输出的网速）
 # 功能：测试两个代理的下载速度（各3次），取平均网速（MB/s），比较快慢
-# 依赖：wget（自动安装）
+# 特性：自动安装 Homebrew（使用清华源）和 wget
 # 用法：bash <(curl -fsSL https://raw.githubusercontent.com/jasonliusz/jasonliusz.github.io/master/speedTest.sh)
 # ============================================
 
@@ -16,13 +16,38 @@ TEST_TIMES=3
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 
-# 安装 wget（如果需要）
+# ---------- 函数：安装 Homebrew（清华镜像源） ----------
+install_brew() {
+    echo -e "${YELLOW}🔧 Homebrew 未安装，开始安装（使用清华镜像源加速）...${NC}" >&2
+    # 设置清华镜像环境变量（用于安装脚本）
+    export HOMEBREW_BREW_GIT_REMOTE="https://mirrors.tuna.tsinghua.edu.cn/git/homebrew/brew.git"
+    export HOMEBREW_CORE_GIT_REMOTE="https://mirrors.tuna.tsinghua.edu.cn/git/homebrew/homebrew-core.git"
+    export HOMEBREW_BOTTLE_DOMAIN="https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles"
+    # 执行官方安装脚本（非交互模式，避免卡住）
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" < /dev/null
+    # 配置环境变量（根据芯片架构）
+    if [[ $(uname -m) == "arm64" ]]; then
+        echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+    else
+        echo 'eval "$(/usr/local/bin/brew shellenv)"' >> ~/.bash_profile
+        eval "$(/usr/local/bin/brew shellenv)"
+    fi
+    # 再次设置已安装的 brew 的镜像源（确保后续操作也走清华）
+    brew update --force --quiet
+    cd "$(brew --repo)" && git remote set-url origin https://mirrors.tuna.tsinghua.edu.cn/git/homebrew/brew.git
+    cd "$(brew --repo homebrew/core)" && git remote set-url origin https://mirrors.tuna.tsinghua.edu.cn/git/homebrew/homebrew-core.git
+    export HOMEBREW_BOTTLE_DOMAIN=https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles
+    echo -e "${GREEN}✅ Homebrew 安装完成（已配置清华源）${NC}" >&2
+}
+
+# ---------- 检查并安装 wget（自动安装 Homebrew 如果缺失） ----------
+echo "🔧 检查依赖..." >&2
+
 if ! command -v wget &> /dev/null; then
     echo -e "${YELLOW}⚠️  wget 未安装，正在通过 Homebrew 安装...${NC}" >&2
     if ! command -v brew &> /dev/null; then
-        echo -e "${RED}❌ 请先安装 Homebrew：${NC}" >&2
-        echo '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"' >&2
-        exit 1
+        install_brew
     fi
     brew install wget
     echo -e "${GREEN}✅ wget 安装完成${NC}" >&2
@@ -30,10 +55,20 @@ else
     echo -e "${GREEN}✅ wget 已安装${NC}" >&2
 fi
 
-# 从 wget 输出中提取平均速度（MB/s）
+# 确保 bc 存在（macOS 自带，但以防万一）
+if ! command -v bc &> /dev/null; then
+    echo -e "${YELLOW}⚠️  bc 未安装，正在通过 Homebrew 安装...${NC}" >&2
+    brew install bc
+    echo -e "${GREEN}✅ bc 安装完成${NC}" >&2
+else
+    echo -e "${GREEN}✅ bc 已安装${NC}" >&2
+fi
+
+echo "" >&2
+
+# ---------- 从 wget 输出中提取平均速度（MB/s） ----------
 extract_speed() {
     local output="$1"
-    # 匹配类似 "12.3 MB/s" 或 "5.2 KB/s" 的行，取最后一个（最终平均速度）
     local speed_line=$(echo "$output" | grep -Eo '[0-9.]+ (MB|KB)/s' | tail -1)
     if [ -z "$speed_line" ]; then
         echo "0"
@@ -47,7 +82,7 @@ extract_speed() {
     echo "$value"
 }
 
-# 测试单个代理，返回平均速度（MB/s）
+# ---------- 测试单个代理，返回平均速度（MB/s） ----------
 test_proxy() {
     local proxy_url=$1
     local proxy_label=$2
@@ -58,7 +93,6 @@ test_proxy() {
 
     for i in $(seq 1 $TEST_TIMES); do
         echo -n "   第 $i 次测试：" >&2
-        # 临时文件保存 wget 输出
         tmp_out=$(mktemp)
         if wget -O /dev/null \
             -e use_proxy=yes \
@@ -66,7 +100,7 @@ test_proxy() {
             --timeout=30 \
             --tries=1 \
             "$TEST_URL" > "$tmp_out" 2>&1; then
-            cat "$tmp_out" >&2   # 显示 wget 输出
+            cat "$tmp_out" >&2
             speed=$(extract_speed "$(cat "$tmp_out")")
             if [ $(echo "$speed > 0" | bc) -eq 1 ]; then
                 total_speed=$(echo "$total_speed + $speed" | bc)
@@ -93,7 +127,7 @@ test_proxy() {
     fi
 }
 
-# 主流程
+# ---------- 主流程 ----------
 echo -e "${YELLOW}🚀 开始比较代理速度（每个代理测试 ${TEST_TIMES} 次）${NC}" >&2
 echo "" >&2
 
