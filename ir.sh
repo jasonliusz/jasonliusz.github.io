@@ -5,31 +5,32 @@ set -e
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# 检查是否为 root 用户
+# 检查 root
 if [ "$EUID" -ne 0 ]; then
     echo -e "${RED}请使用 root 用户或通过 sudo 执行此脚本。${NC}"
     exit 1
 fi
 
-# 检查必要命令
-for cmd in curl systemctl; do
+# 安装依赖
+echo -e "${GREEN}更新软件源并安装必要依赖 (curl, unzip, wget)...${NC}"
+apt-get update -qq
+apt-get install -y curl unzip wget
+
+# 检查命令
+for cmd in curl systemctl wget; do
     if ! command -v $cmd &> /dev/null; then
-        echo -e "${RED}未找到命令: $cmd，请先安装。${NC}"
+        echo -e "${RED}未找到命令: $cmd，请手动安装。${NC}"
         exit 1
     fi
 done
 
 echo -e "${GREEN}开始优化 TCP 设置...${NC}"
-
-# 备份原有 sysctl 配置
 cp /etc/sysctl.conf /etc/sysctl.conf.bak.$(date +%Y%m%d%H%M%S) 2>/dev/null || true
 
-# 追加优化参数（如果不存在则添加）
 SYSCTL_CONF="/etc/sysctl.d/99-xray.conf"
 cat > $SYSCTL_CONF <<EOF
-# Xray TCP 优化参数
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 net.ipv4.tcp_fastopen = 3
@@ -41,19 +42,16 @@ net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.tcp_mtu_probing = 1
 EOF
 
-# 应用 sysctl 配置
 sysctl -p $SYSCTL_CONF
 echo -e "${GREEN}TCP 优化已完成并生效。${NC}"
 
 echo -e "${GREEN}开始安装 Xray...${NC}"
-# 官方安装脚本
 bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 
 echo -e "${GREEN}Xray 安装完成，配置服务自启动...${NC}"
 systemctl enable xray
 systemctl daemon-reload
 
-# 备份原有配置
 CONFIG_DIR="/usr/local/etc/xray"
 CONFIG_FILE="$CONFIG_DIR/config.json"
 if [ -f "$CONFIG_FILE" ]; then
@@ -61,7 +59,6 @@ if [ -f "$CONFIG_FILE" ]; then
     echo -e "${YELLOW}已备份原有 config.json${NC}"
 fi
 
-# 写入新配置
 mkdir -p "$CONFIG_DIR"
 cat > "$CONFIG_FILE" <<'EOF'
 {
@@ -102,6 +99,14 @@ cat > "$CONFIG_FILE" <<'EOF'
           ]
         }
       }
+    },
+    {
+      "listen": "127.0.0.1",
+      "protocol": "http",
+      "settings": {
+        "timeout": 360
+      },
+      "port": "11087"
     }
   ],
   "outbounds": [
@@ -131,18 +136,18 @@ cat > "$CONFIG_FILE" <<'EOF'
 }
 EOF
 
-# 修正配置文件权限（xray 服务通常以 xray 用户运行）
 chown -R xray:xray "$CONFIG_DIR"
 chmod 644 "$CONFIG_FILE"
 
 echo -e "${GREEN}配置文件已写入: $CONFIG_FILE${NC}"
 
-# 检查端口 443 是否被占用
 if ss -tlnp | grep -q ':443 '; then
-    echo -e "${YELLOW}警告: 端口 443 已被占用，Xray 可能无法启动。请检查并释放端口。${NC}"
+    echo -e "${YELLOW}警告: 端口 443 已被占用。${NC}"
+fi
+if ss -tlnp | grep -q ':11087 '; then
+    echo -e "${YELLOW}警告: 端口 11087 已被占用。${NC}"
 fi
 
-# 重启 Xray 服务以应用配置
 systemctl restart xray
 if systemctl is-active --quiet xray; then
     echo -e "${GREEN}Xray 服务已成功启动。${NC}"
@@ -151,4 +156,20 @@ else
     exit 1
 fi
 
-echo -e "${GREEN}全部完成！Xray 已安装并运行，配置已生效。${NC}"
+sleep 2
+
+echo -e "${GREEN}测试 HTTP 代理 (127.0.0.1:11087) 是否生效...${NC}"
+TEST_URL="https://storage.googleapis.com/gcp-public-data-landsat/LC08/01/001/002/LC08_L1GT_001002_20160817_20170322_01_T2/LC08_L1GT_001002_20160817_20170322_01_T2_B1.TIF"
+
+if wget -O /dev/null -e use_proxy=yes -e https_proxy=127.0.0.1:11087 --timeout=10 --tries=1 "$TEST_URL" 2>&1 | grep -q "HTTP request sent"; then
+    echo -e "${GREEN}代理测试成功：能够通过 HTTP 代理访问目标地址。${NC}"
+else
+    if wget -O /dev/null -e use_proxy=yes -e https_proxy=127.0.0.1:11087 --timeout=10 --tries=1 "$TEST_URL"; then
+        echo -e "${GREEN}代理测试成功。${NC}"
+    else
+        echo -e "${RED}代理测试失败。请检查 Xray 日志。${NC}"
+        exit 1
+    fi
+fi
+
+echo -e "${GREEN}全部完成！Xray 已安装并运行，HTTP 代理 (127.0.0.1:11087) 测试通过。${NC}"
