@@ -42,7 +42,6 @@ net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.tcp_mtu_probing = 1
 EOF
 
-# 比较文件内容
 if [ ! -f "$SYSCTL_CONF" ] || ! cmp -s /tmp/99-xray.conf.new "$SYSCTL_CONF"; then
     cp /tmp/99-xray.conf.new "$SYSCTL_CONF"
     sysctl -p "$SYSCTL_CONF"
@@ -71,7 +70,7 @@ CONFIG_DIR="/usr/local/etc/xray"
 CONFIG_FILE="$CONFIG_DIR/config.json"
 mkdir -p "$CONFIG_DIR"
 
-# 生成新配置到临时文件
+# 生成新配置到临时文件（注意：端口 11087 已改为数字，无引号）
 cat > /tmp/config.json.new <<'EOF'
 {
   "log": {
@@ -118,7 +117,7 @@ cat > /tmp/config.json.new <<'EOF'
       "settings": {
         "timeout": 360
       },
-      "port": "11087"
+      "port": 11087
     }
   ],
   "outbounds": [
@@ -151,7 +150,6 @@ EOF
 # 比较配置文件
 NEED_RESTART=false
 if [ ! -f "$CONFIG_FILE" ] || ! cmp -s /tmp/config.json.new "$CONFIG_FILE"; then
-    # 备份旧配置（如果存在）
     if [ -f "$CONFIG_FILE" ]; then
         BACKUP_FILE="${CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
         cp "$CONFIG_FILE" "$BACKUP_FILE"
@@ -180,7 +178,6 @@ if [ "$NEED_RESTART" = true ]; then
     echo -e "${GREEN}重启 Xray 服务以应用新配置...${NC}"
     systemctl restart xray
 else
-    # 确保服务至少是运行状态
     if ! systemctl is-active --quiet xray; then
         echo -e "${YELLOW}Xray 服务未运行，尝试启动...${NC}"
         systemctl start xray
@@ -189,7 +186,6 @@ else
     fi
 fi
 
-# 最终检查服务状态
 if systemctl is-active --quiet xray; then
     echo -e "${GREEN}Xray 服务运行正常。${NC}"
 else
