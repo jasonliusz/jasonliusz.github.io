@@ -3,7 +3,7 @@
 # ============================================
 # 代理速度比较脚本 for macOS 12（3次平均版）
 # 功能：测试两个 HTTP 代理的下载速度（各3次），输出平均耗时并比较快慢
-# 调试特性：打印每次执行的 wget 命令，验证变量，避免 bc 解析错误
+# 调试特性：打印每次执行的 wget 命令，wget 输出直接显示在终端
 # 用法：bash <(curl -fsSL https://raw.githubusercontent.com/jasonliusz/jasonliusz.github.io/master/speedTest.sh)
 # ============================================
 
@@ -16,11 +16,11 @@ TEST_URL="https://storage.googleapis.com/gcp-public-data-landsat/LC08/01/001/002
 TEST_TIMES=3                     # 每个代理测试次数
 # ----------------------------
 
-# 颜色输出（用于美观）
+# 颜色输出
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # ---------- 函数：安装缺失软件（幂等） ----------
 install_if_missing() {
@@ -38,6 +38,15 @@ install_if_missing() {
     fi
 }
 
+# ---------- 函数：获取高精度时间戳（兼容 macOS） ----------
+get_timestamp() {
+    if command -v python3 &> /dev/null; then
+        python3 -c "import time; print(time.time())" 2>/dev/null
+    else
+        date +%s  # 回退到秒级精度
+    fi
+}
+
 # ---------- 函数：测试单个代理多次，返回平均耗时 ----------
 test_proxy_multi() {
     local proxy_url=$1
@@ -50,62 +59,43 @@ test_proxy_multi() {
     for i in $(seq 1 $TEST_TIMES); do
         echo -n "   第 $i 次测试："
 
-        # 记录开始时间（使用 date 命令，精度到纳秒）
-        local start_time=$(date +%s.%N 2>/dev/null || date +%s)  # 兼容不支持 %N 的系统
-        # 如果 date 不支持 %N，则 fallback 到秒（macOS 支持 %N？实际上 macOS date 不支持 %N，需要改用 perl 或 python）
-        # 更好的方法：使用 $(( $(date +%s) * 1000 )) 毫秒，但为了精度，这里用 python
-        if [[ "$start_time" == *"N"* ]] || [[ -z "$start_time" ]]; then
-            # macOS 的 date 不支持 %N，使用 python 获取纳秒
-            start_time=$(python3 -c "import time; print(time.time())" 2>/dev/null || echo "")
-            if [[ -z "$start_time" ]]; then
-                # 最终 fallback 到秒
-                start_time=$(date +%s)
-            fi
-        fi
-
-        # 构建 wget 命令（用于调试输出）
-        local wget_cmd="wget -O /dev/null -e use_proxy=yes -e https_proxy=\"$proxy_url\" --timeout=30 --tries=1 --quiet \"$TEST_URL\""
+        # 构建 wget 命令（用于调试输出，不带静默选项）
+        local wget_cmd="wget -O /dev/null -e use_proxy=yes -e https_proxy=\"$proxy_url\" --timeout=30 --tries=1 \"$TEST_URL\""
         echo -e "${YELLOW}\n       [调试] 执行命令: $wget_cmd${NC}"
 
-        # 执行下载
+        local start_time=$(get_timestamp)
+        
+        # 执行 wget（不加 --quiet，不重定向 stderr，让输出显示在终端）
         if wget -O /dev/null \
             -e use_proxy=yes \
             -e https_proxy="$proxy_url" \
             --timeout=30 \
             --tries=1 \
-            --quiet \
-            "$TEST_URL" 2>/dev/null; then
-
-            # 记录结束时间
-            local end_time=$(date +%s.%N 2>/dev/null || date +%s)
-            if [[ "$end_time" == *"N"* ]] || [[ -z "$end_time" ]]; then
-                end_time=$(python3 -c "import time; print(time.time())" 2>/dev/null || echo "")
-                if [[ -z "$end_time" ]]; then
-                    end_time=$(date +%s)
-                fi
-            fi
-
+            "$TEST_URL"; then
+            
+            local end_time=$(get_timestamp)
+            
             # 计算耗时（使用 bc 或 awk）
             local duration=""
             if command -v bc &> /dev/null; then
                 duration=$(echo "$end_time - $start_time" | bc)
             else
-                # 如果没有 bc，使用 awk（macOS 通常有 bc，但以防万一）
                 duration=$(awk "BEGIN {print $end_time - $start_time}")
             fi
-
+            
             # 检查 duration 是否为有效数字
             if [[ ! "$duration" =~ ^[0-9]+\.?[0-9]*$ ]]; then
                 echo -e " ${RED}耗时计算失败（非数字: $duration）${NC}"
                 continue
             fi
-
+            
             total_time=$(echo "$total_time + $duration" | bc)
             success_count=$((success_count + 1))
             echo -e " ${GREEN}成功，耗时 ${duration} 秒${NC}"
         else
             echo -e " ${RED}失败${NC}"
         fi
+        echo ""  # 空行分隔每次测试
     done
 
     if [ $success_count -eq 0 ]; then
@@ -122,7 +112,7 @@ test_proxy_multi() {
 echo "🔧 检查依赖..."
 install_if_missing wget
 
-# 额外检查 bc（macOS 默认没有 bc？实际上 macOS 自带 bc，但旧版本可能没有）
+# 检查 bc（macOS 通常自带）
 if ! command -v bc &> /dev/null; then
     echo -e "${YELLOW}⚠️  bc 未安装，尝试通过 Homebrew 安装...${NC}"
     install_if_missing bc
